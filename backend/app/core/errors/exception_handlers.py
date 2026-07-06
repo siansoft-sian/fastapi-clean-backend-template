@@ -18,8 +18,25 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.enums import ErrorCategory
 from app.core.errors import error_codes
-from app.core.errors.core_errors import AppError
+from app.core.errors.core_errors import AppError, RateLimitExceededError
 from app.core.responses import api_error
+
+
+def rate_limit_headers(exc: RateLimitExceededError) -> dict[str, str]:
+    """Retry-After + X-RateLimit-* from the error's payload (delta-seconds).
+
+    Shared by the 429 exception handler and the rate-limit middleware (which
+    runs outside the handler stack and must build its response inline).
+    """
+    headers = {
+        "Retry-After": str(exc.retry_after),
+        "X-RateLimit-Remaining": str(exc.remaining),
+        "X-RateLimit-Reset": str(exc.retry_after),
+    }
+    if exc.limit is not None:
+        headers["X-RateLimit-Limit"] = str(exc.limit)
+    return headers
+
 
 logger = structlog.get_logger(__name__)
 
@@ -69,6 +86,26 @@ def register_exception_handlers(app: FastAPI) -> None:
             message=exc.message,
             category=exc.category,
             details=exc.details,
+        )
+
+    @app.exception_handler(RateLimitExceededError)
+    async def handle_rate_limit_error(
+        request: Request, exc: RateLimitExceededError
+    ) -> JSONResponse:
+        logger.warning(
+            "rate_limited",
+            error_code=exc.code,
+            path=request.url.path,
+            method=request.method,
+        )
+        return _error_response(
+            request,
+            status_code=exc.http_status,
+            code=exc.code,
+            message=exc.message,
+            category=exc.category,
+            details=exc.details,
+            headers=rate_limit_headers(exc),
         )
 
     @app.exception_handler(RequestValidationError)

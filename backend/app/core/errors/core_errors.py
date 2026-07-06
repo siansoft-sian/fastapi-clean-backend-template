@@ -64,10 +64,27 @@ class ConflictError(AppError):
 
 
 class RateLimitExceededError(AppError):
+    """Carries the limit metadata the 429 handler turns into Retry-After and
+    X-RateLimit-* headers. `retry_after` is delta-seconds."""
+
     code = error_codes.RATE_LIMIT_EXCEEDED
     http_status = 429
     category = ErrorCategory.RATE_LIMIT
     default_message = "Rate limit exceeded"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        details: dict[str, Any] | None = None,
+        retry_after: int = 60,
+        limit: int | None = None,
+        remaining: int = 0,
+    ) -> None:
+        super().__init__(message, details=details)
+        self.retry_after = max(1, int(retry_after))
+        self.limit = limit
+        self.remaining = max(0, int(remaining))
 
 
 class DatabaseError(AppError):

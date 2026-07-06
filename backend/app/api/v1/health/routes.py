@@ -42,16 +42,34 @@ async def _ping_database(pool: Any) -> str:
     return "ok"
 
 
+async def _ping_redis(redis_client: Any) -> str:
+    """PING through the opaque client wrapper. A probe reports, never raises."""
+    if redis_client is None:
+        return "error"
+    try:
+        await redis_client.client.ping()
+    except Exception as exc:  # noqa: BLE001 — translated to component state, logged
+        logger.warning("readiness_redis_ping_failed", error_type=type(exc).__name__)
+        return "error"
+    return "ok"
+
+
 async def _readiness(request: Request, settings: Settings) -> ReadinessData:
     components: dict[str, str] = {}
     if settings.startup_connect_database:
         components["database"] = await _ping_database(getattr(request.app.state, "db_pool", None))
     else:
         components["database"] = "disabled"
-    # Redis/Casbin cannot be enabled yet (container fails loudly), so their
-    # states are always "disabled" until their adapters ship.
-    components["redis"] = "disabled" if not settings.startup_connect_redis else "unknown"
-    components["casbin"] = "disabled" if not settings.startup_load_casbin else "unknown"
+    if settings.startup_connect_redis:
+        components["redis"] = await _ping_redis(getattr(request.app.state, "redis_client", None))
+    else:
+        components["redis"] = "disabled"
+    # Casbin readiness = the enforcer object exists (loaded at startup).
+    if settings.startup_load_casbin:
+        authz = getattr(request.app.state, "authorization_service", None)
+        components["casbin"] = "ok" if authz is not None else "error"
+    else:
+        components["casbin"] = "disabled"
     # JWKS is "loaded" once the auth milestone ships a verifier; until then a
     # configured URL is unverifiable.
     components["jwks"] = "unknown" if settings.supabase_jwks_url is not None else "disabled"

@@ -24,6 +24,7 @@ from app.authorization.authorization_service import CROSS_TENANT_REASON
 from app.authorization.resource_context import ResourceContext
 from app.core.errors.core_errors import ForbiddenError, NotFoundError
 from app.core.responses import api_success
+from app.rate_limiting.dependency import rate_limit
 
 router = APIRouter(prefix="/_authz-demo", tags=["_authz-demo"])
 
@@ -47,6 +48,17 @@ async def approve(
 ) -> dict[str, Any]:
     """LAYER 1 proof: the coarse scope gate rejects before any service logic runs."""
     return api_success({"approved": True, "by": principal.user_id})
+
+
+@router.post(
+    "/limited",
+    dependencies=[Depends(verify_csrf), Depends(rate_limit("booking.create"))],
+)
+async def limited(
+    principal: Annotated[AuthContext, Depends(require_authenticated)],
+) -> dict[str, Any]:
+    """M5 proof: per-USER rate limit as a post-auth dependency."""
+    return api_success({"ok": True, "by": principal.user_id})
 
 
 @router.post("/{item_id}/edit", dependencies=[Depends(verify_csrf)])

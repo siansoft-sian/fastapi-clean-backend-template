@@ -48,6 +48,19 @@ forbidden_modules =
     fastapi
     starlette
 
+[importlinter:contract:rate-limiting-core-framework-free]
+name = Rate-limiting core stays FastAPI-free (only dependency.py and the middleware touch it)
+type = forbidden
+source_modules =
+    app.rate_limiting.backend
+    app.rate_limiting.client_ip
+    app.rate_limiting.keys
+    app.rate_limiting.limiter
+    app.rate_limiting.rules
+forbidden_modules =
+    fastapi
+    starlette
+
 [importlinter:contract:authorization-framework-free]
 name = Authorization layer stays FastAPI-free (only the require_scope dependency touches FastAPI)
 type = forbidden

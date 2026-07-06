@@ -6,7 +6,8 @@ Request flow (outermost first):
       -> http_logging      access log with request_id and duration
         -> security_headers
           -> tenant_extractor   (stub) tenant known before limiting/idempotency
-            -> rate_limit       (stub) reject early, per tenant
+            -> rate_limit       (real, M5) global per-IP ceiling, pre-auth;
+                                per-user/tenant limits are a route DEPENDENCY
               -> idempotency    (stub) replay detection after limiter, before tx
                 -> db_transaction (stub) innermost: request-scoped transaction
                   -> router / endpoint
