@@ -1,0 +1,29 @@
+[project]
+name = "fastapi-clean-backend"
+version = "0.1.0"
+description = "Production-grade, reusable FastAPI backend template (Track A: asyncpg + Postgres behind repository ports)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "integration: requires external services",
+    "postgres: requires PostgreSQL",
+    "mysql: requires MySQL",
+    "redis: requires Redis",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
