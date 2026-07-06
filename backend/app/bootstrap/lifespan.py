@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.supabase_auth_client = container.supabase_auth_client
     app.state.jwks_client = container.jwks_client
     app.state.authorization_service = container.authorization_service
+    app.state.redis_client = container.redis_client
+    app.state.rate_limiter = container.rate_limiter
     try:
         yield
     finally:
@@ -34,3 +36,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.supabase_auth_client = None
         app.state.jwks_client = None
         app.state.authorization_service = None
+        app.state.redis_client = None
+        app.state.rate_limiter = None

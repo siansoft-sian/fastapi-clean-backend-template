@@ -20,18 +20,14 @@ from fastapi import Depends, Request
 
 from app.auth.auth_context import AuthContext
 from app.auth.dependencies import get_current_principal
+from app.bootstrap.factories import provide_rate_limiter
 from app.core.config import get_settings
 from app.rate_limiting.client_ip import parse_trusted_proxies, resolve_client_ip
-from app.rate_limiting.limiter import RateLimiter
 from app.rate_limiting.rules import RateLimitScope, get_rule
 
 _trusted_proxies = lru_cache(maxsize=4)(parse_trusted_proxies)
 
-
-def _limiter(request: Request) -> RateLimiter | None:
-    if not get_settings().rate_limit_enabled:
-        return None
-    return getattr(request.app.state, "rate_limiter", None)
+_limiter = provide_rate_limiter  # DI seam: the factory owns limiter resolution
 
 
 def _request_identifier(scope: RateLimitScope, request: Request) -> str:
@@ -47,10 +43,15 @@ def _request_identifier(scope: RateLimitScope, request: Request) -> str:
 
 
 def rate_limit(rule_name: str) -> Callable[..., Coroutine[Any, Any, None]]:
-    """Dependency factory; unknown rule names fail at router-definition time."""
-    rule = get_rule(rule_name)
+    """Dependency factory; unknown rule names fail at router-definition time.
 
-    if rule.scope in (RateLimitScope.USER, RateLimitScope.TENANT):
+    Only the SCOPE is captured here (it selects the dependency signature);
+    limit/window are re-read from the registry per request so limits stay
+    tunable at runtime — same behavior as the middleware.
+    """
+    scope = get_rule(rule_name).scope  # eager validation
+
+    if scope in (RateLimitScope.USER, RateLimitScope.TENANT):
 
         async def _enforce_for_principal(
             request: Request,
@@ -59,6 +60,7 @@ def rate_limit(rule_name: str) -> Callable[..., Coroutine[Any, Any, None]]:
             limiter = _limiter(request)
             if limiter is None:
                 return
+            rule = get_rule(rule_name)
             identifier = (
                 principal.user_id if rule.scope is RateLimitScope.USER else principal.tenant_id
             )
@@ -70,6 +72,7 @@ def rate_limit(rule_name: str) -> Callable[..., Coroutine[Any, Any, None]]:
         limiter = _limiter(request)
         if limiter is None:
             return
+        rule = get_rule(rule_name)
         await limiter.enforce(rule, _request_identifier(rule.scope, request))
 
     return _enforce_for_request

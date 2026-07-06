@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from app.bootstrap.factories import provide_rate_limiter
 from app.core.config import get_settings
 from app.core.enums import ErrorCategory
 from app.core.errors.core_errors import RateLimitExceededError
@@ -49,9 +50,9 @@ def _rate_limited_response(request: Request, exc: RateLimitExceededError) -> JSO
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        limiter = getattr(request.app.state, "rate_limiter", None)
+        limiter = provide_rate_limiter(request)  # None -> disabled (invariant 4)
         settings = get_settings()
-        if limiter is None or not settings.rate_limit_enabled:
+        if limiter is None:
             return await call_next(request)
         if _is_exempt(request.url.path, settings.api_prefix):
             return await call_next(request)

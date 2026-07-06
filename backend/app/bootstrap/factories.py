@@ -29,6 +29,7 @@ from app.authorization.authorization_service import AuthorizationService
 from app.authorization.casbin_enforcer import CasbinEnforcer
 from app.core.config import get_settings
 from app.db.transaction_manager import TransactionManagerProtocol
+from app.rate_limiting.limiter import RateLimiter
 
 
 def provide_transaction_manager(request: Request) -> TransactionManagerProtocol:
@@ -88,6 +89,19 @@ def provide_identity_mapper(request: Request) -> IdentityMapperProtocol:
     mapper = AsyncpgIdentityMapper(_require_pool(request, "Identity mapper"))
     request.app.state.identity_mapper = mapper
     return mapper
+
+
+def provide_rate_limiter(request: Request) -> RateLimiter | None:
+    """The process-wide limiter, or None (= rate limiting pass-through).
+
+    container.startup() builds it when STARTUP_CONNECT_REDIS=true; tests
+    inject a fake-backed limiter via `app.state.rate_limiter`. Returning None
+    is legitimate — both consumers treat it as disabled (invariant 4).
+    """
+    if not get_settings().rate_limit_enabled:
+        return None
+    limiter: RateLimiter | None = getattr(request.app.state, "rate_limiter", None)
+    return limiter
 
 
 def provide_authorization_service(request: Request) -> AuthorizationService:

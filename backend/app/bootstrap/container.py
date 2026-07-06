@@ -7,7 +7,9 @@ starts and stops without performing any I/O.
 M2: the database path is real — `startup_connect_database=true` builds and
 connects the asyncpg pool and its transaction manager.
 M4: `startup_load_casbin=true` builds the Casbin enforcer + AuthorizationService
-(local file read only). Redis/Celery still fail loudly until their milestones.
+(local file read only).
+M5: `startup_connect_redis=true` connects Redis and builds the RateLimiter.
+Celery still fails loudly until its milestone.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ from app.authorization.casbin_enforcer import CasbinEnforcer
 from app.core.config import Settings
 from app.db.connection import DatabasePool
 from app.db.transaction_manager import AsyncpgTransactionManager
+from app.infrastructure.cache.redis_client import RedisClient
+from app.rate_limiting.backend import RedisRateLimiterBackend
+from app.rate_limiting.limiter import RateLimiter
 
 logger = structlog.get_logger(__name__)
 
@@ -36,7 +41,8 @@ class Container:
         self.supabase_auth_client: SupabaseAuthClient | None = None
         self.jwks_client: JwksClient | None = None
         self._gotrue_http: httpx.AsyncClient | None = None
-        self.redis: object | None = None
+        self.redis_client: RedisClient | None = None
+        self.rate_limiter: RateLimiter | None = None
         self.casbin_enforcer: CasbinEnforcer | None = None
         self.authorization_service: AuthorizationService | None = None
         self.celery_app: object | None = None
@@ -84,9 +90,11 @@ class Container:
             if settings.startup_preload_jwks:
                 await self.jwks_client.preload()
         if self.settings.startup_connect_redis:
-            raise NotImplementedError(
-                "STARTUP_CONNECT_REDIS=true, but the Redis adapter has not shipped yet. "
-                "Set the flag to false."
+            self.redis_client = RedisClient.from_settings(self.settings)
+            await self.redis_client.connect()
+            self.rate_limiter = RateLimiter(
+                RedisRateLimiterBackend(self.redis_client),
+                default_fail_open=self.settings.rate_limit_fail_open,
             )
         if self.settings.startup_load_casbin:
             # Local model/policy file read only — no network I/O. Loading here
@@ -118,6 +126,10 @@ class Container:
         self.jwks_client = None
         self.authorization_service = None
         self.casbin_enforcer = None
+        self.rate_limiter = None
+        if self.redis_client is not None:
+            await self.redis_client.disconnect()
+        self.redis_client = None
         if self.database is not None:
             await self.database.disconnect()
         self.transaction_manager = None
