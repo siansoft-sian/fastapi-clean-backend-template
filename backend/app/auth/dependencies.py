@@ -22,10 +22,15 @@ from app.auth.exceptions import (
     CsrfValidationError,
 )
 from app.auth.session_repository import SessionRepositoryProtocol
-from app.bootstrap.factories import provide_session_repository
+from app.authorization.authorization_service import AuthorizationService
+from app.bootstrap.factories import (
+    provide_authorization_service,
+    provide_session_repository,
+)
 from app.core.errors.core_errors import ForbiddenError
 
 SessionRepositoryDep = Annotated[SessionRepositoryProtocol, Depends(provide_session_repository)]
+AuthorizationServiceDep = Annotated[AuthorizationService, Depends(provide_authorization_service)]
 
 
 async def get_current_principal(
@@ -47,12 +52,19 @@ async def get_current_principal(
         session_token=session_token, idle_ttl_seconds=settings.session_idle_ttl_seconds
     )
 
+    # TODO(M3-reconcile): resolve roles via the DB `get_user_roles(user_id,
+    # tenant_id)` at session creation, cache them (and
+    # AuthorizationService.compute_scopes(roles, tenant_id)) on the session
+    # record, refresh on /auth/refresh. Until the identity/RBAC milestone
+    # ships that function, principals resolved from sessions carry empty
+    # roles/scopes; tests and the _authz_demo inject AuthContexts directly.
     principal = AuthContext(
         user_id=session.user_id,
         tenant_id=session.tenant_id,
         session_id=session.session_internal_id,  # internal id — safe for audit/logs
         email=session.email,
-        scopes=frozenset(),  # populated by the M4 authorization milestone
+        roles=frozenset(),
+        scopes=frozenset(),
     )
     auth_context_var.set(principal)
     # Bind identity (never the cookie token) for the request's log lines.
@@ -76,15 +88,21 @@ async def verify_csrf(request: Request, settings: SettingsDep) -> None:
         raise CsrfValidationError()
 
 
-def require_scope(scope: str) -> Callable[[AuthContext], Coroutine[Any, Any, AuthContext]]:
-    """Guard factory: `Depends(require_scope(SCOPE_TENANT_ADMIN))`.
+def require_scope(
+    scope: str,
+) -> Callable[[AuthContext, AuthorizationService], Coroutine[Any, Any, AuthContext]]:
+    """Layer-1 route gate: `Depends(require_scope(scopes.BOOKING_APPROVE))`.
 
-    Scope population arrives in M4; until then, principals carry no scopes and
-    this guard denies (fail closed).
+    A coarse pre-filter over the principal's cached scopes — fails closed for
+    principals without scopes. NEVER sufficient for ownership/assignment/
+    tenant decisions: those go through AuthorizationService.enforce() in the
+    use case (Layer 2, authoritative).
     """
 
-    async def _check_scope(principal: PrincipalDep) -> AuthContext:
-        if scope not in principal.scopes:
+    async def _check_scope(
+        principal: PrincipalDep, authorization: AuthorizationServiceDep
+    ) -> AuthContext:
+        if not authorization.has_scope(principal, scope):
             raise ForbiddenError(details={"missing_scope": scope})
         return principal
 

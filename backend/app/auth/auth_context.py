@@ -15,6 +15,10 @@ class AuthContext:
     tenant_id: str
     session_id: str
     email: str | None = None
+    # Roles resolved for the ACTIVE tenant (DB get_user_roles at session
+    # creation) and the coarse scope cache derived from them against the
+    # policy (AuthorizationService.compute_scopes). Layer 2 stays live.
+    roles: frozenset[str] = field(default_factory=frozenset)
     scopes: frozenset[str] = field(default_factory=frozenset)
 
 

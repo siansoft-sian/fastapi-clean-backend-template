@@ -45,6 +45,15 @@ forbidden_modules =
     fastapi
     starlette
 
+[importlinter:contract:authorization-framework-free]
+name = Authorization layer stays FastAPI-free (only the require_scope dependency touches FastAPI)
+type = forbidden
+source_modules =
+    app.authorization
+forbidden_modules =
+    fastapi
+    starlette
+
 [importlinter:contract:only-db-knows-asyncpg]
 name = Only app.db and module infrastructure may import asyncpg directly
 type = forbidden

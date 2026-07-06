@@ -15,3 +15,18 @@ Ground rules (unchanged):
 - Function sources live under `../procedures/`; tables under `../schema/`.
   Deploy scripts `\ir`-include them, so those files are the single source of
   truth. Signature changes go through `sqitch rework`, never in-place edits.
+
+## Pending contract: RBAC role data (identity/RBAC milestone)
+
+TODO(M3-reconcile) — authored by the **database-designer** skill, consumed by
+M4 authorization:
+
+- `app.roles` (role codes: admin, manager, staff, owner, finance, ...) and
+  `app.user_roles` (user ↔ role per tenant; or extend `app.memberships`).
+- `app.get_user_roles(p_user_id uuid, p_tenant_id uuid)` → envelope with
+  `data.roles: [text]` — called at session creation/refresh so `AuthContext`
+  carries `roles`, and scopes are cached via
+  `AuthorizationService.compute_scopes(roles, tenant_id)`.
+- Longer term, the rbac-library projection (`identity.casbin_rule` +
+  `sp_rebuild_casbin_policy()`) can replace the request-carried roles in
+  `app/authorization/casbin_model.conf` with `g` rules.
