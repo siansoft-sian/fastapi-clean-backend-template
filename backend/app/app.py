@@ -9,6 +9,7 @@ from fastapi.responses import ORJSONResponse
 
 from app.bootstrap.lifespan import lifespan
 from app.core.config import Settings, get_settings
+from app.core.errors.exception_handlers import register_exception_handlers
 
 
 def init_sentry(settings: Settings) -> None:
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if docs_enabled else None,
         openapi_url="/openapi.json" if docs_enabled else None,
     )
+    register_exception_handlers(app)
     return app
 
 
