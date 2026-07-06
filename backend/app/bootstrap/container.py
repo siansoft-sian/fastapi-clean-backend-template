@@ -5,8 +5,9 @@ Nothing here runs at import time. `startup()` touches only the resources whose
 starts and stops without performing any I/O.
 
 M2: the database path is real — `startup_connect_database=true` builds and
-connects the asyncpg pool and its transaction manager. Redis/Casbin/Celery
-still fail loudly until their milestones ship.
+connects the asyncpg pool and its transaction manager.
+M4: `startup_load_casbin=true` builds the Casbin enforcer + AuthorizationService
+(local file read only). Redis/Celery still fail loudly until their milestones.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ import structlog
 
 from app.auth.jwks_client import JwksClient
 from app.auth.supabase_auth_client import DEFAULT_TIMEOUT, SupabaseAuthClient
+from app.authorization.authorization_service import AuthorizationService
+from app.authorization.casbin_enforcer import CasbinEnforcer
 from app.core.config import Settings
 from app.db.connection import DatabasePool
 from app.db.transaction_manager import AsyncpgTransactionManager
@@ -34,7 +37,8 @@ class Container:
         self.jwks_client: JwksClient | None = None
         self._gotrue_http: httpx.AsyncClient | None = None
         self.redis: object | None = None
-        self.casbin_enforcer: object | None = None
+        self.casbin_enforcer: CasbinEnforcer | None = None
+        self.authorization_service: AuthorizationService | None = None
         self.celery_app: object | None = None
         self._started = False
 
@@ -85,10 +89,10 @@ class Container:
                 "Set the flag to false."
             )
         if self.settings.startup_load_casbin:
-            raise NotImplementedError(
-                "STARTUP_LOAD_CASBIN=true, but the Casbin enforcer has not shipped yet. "
-                "Set the flag to false."
-            )
+            # Local model/policy file read only — no network I/O. Loading here
+            # (not lazily) makes a broken policy fail the deploy fast.
+            self.casbin_enforcer = CasbinEnforcer.from_settings(self.settings)
+            self.authorization_service = AuthorizationService(self.casbin_enforcer)
         if self.settings.startup_create_celery:
             raise NotImplementedError(
                 "STARTUP_CREATE_CELERY=true, but the Celery app has not shipped yet. "
@@ -112,6 +116,8 @@ class Container:
         self._gotrue_http = None
         self.supabase_auth_client = None
         self.jwks_client = None
+        self.authorization_service = None
+        self.casbin_enforcer = None
         if self.database is not None:
             await self.database.disconnect()
         self.transaction_manager = None

@@ -135,16 +135,28 @@ async def test_verify_csrf_rejects_missing_or_mismatched(
         await verify_csrf(make_request(cookies=cookies, headers=headers), make_settings())
 
 
+def make_authorization_service() -> object:
+    from app.authorization.authorization_service import AuthorizationService
+    from app.authorization.casbin_enforcer import CasbinEnforcer
+
+    return AuthorizationService(
+        CasbinEnforcer(
+            model_path="app/authorization/casbin_model.conf",
+            policy_path="app/authorization/policy.csv",
+        )
+    )
+
+
 async def test_require_scope_fails_closed_without_scopes() -> None:
     principal = AuthContext(user_id="u", tenant_id="t", session_id="s")
-    guard = require_scope("tenant:admin")
+    guard = require_scope("booking.approve")
     with pytest.raises(ForbiddenError):
-        await guard(principal)
+        await guard(principal, make_authorization_service())
 
 
 async def test_require_scope_passes_when_scope_present() -> None:
     principal = AuthContext(
-        user_id="u", tenant_id="t", session_id="s", scopes=frozenset({"tenant:admin"})
+        user_id="u", tenant_id="t", session_id="s", scopes=frozenset({"booking.approve"})
     )
-    guard = require_scope("tenant:admin")
-    assert await guard(principal) is principal
+    guard = require_scope("booking.approve")
+    assert await guard(principal, make_authorization_service()) is principal

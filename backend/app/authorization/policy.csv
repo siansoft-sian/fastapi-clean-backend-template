@@ -1,0 +1,6 @@
+p, admin, booking, *, , allow
+p, manager, booking, approve, , allow
+p, staff, event, read, r.sub.id in r.obj.assigned, allow
+p, owner, profile, update, r.obj.owner_id == r.sub.id, allow
+p, finance, payment, refund, , allow
+p, *, payment, refund, not ('finance' in r.sub.roles), deny

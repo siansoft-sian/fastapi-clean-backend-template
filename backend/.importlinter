@@ -18,12 +18,15 @@ forbidden_modules =
     httpx
 
 [importlinter:contract:api-no-db-adapters]
-name = API layer does not import DB adapters
+name = API layer does not import DB adapters directly
 type = forbidden
 source_modules =
     app.modules.*.api
 forbidden_modules =
     app.db
+; Direct-only: module routers may use auth/boundary Depends whose internals
+; (session repository) legitimately reach app.db — routers themselves must not.
+allow_indirect_imports = True
 
 [importlinter:contract:auth-core-framework-free]
 name = Auth core logic stays FastAPI-free (only cookies/dependencies/routes may touch it)
@@ -41,6 +44,15 @@ source_modules =
     app.auth.session_tokens
     app.auth.supabase_auth_client
     app.auth.token_cipher
+forbidden_modules =
+    fastapi
+    starlette
+
+[importlinter:contract:authorization-framework-free]
+name = Authorization layer stays FastAPI-free (only the require_scope dependency touches FastAPI)
+type = forbidden
+source_modules =
+    app.authorization
 forbidden_modules =
     fastapi
     starlette
