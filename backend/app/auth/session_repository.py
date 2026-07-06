@@ -1,161 +1,217 @@
-"""Server-side session storage — M2 repository pattern.
+"""Server-side session storage over the sqitch DB contract (M2 repository pattern).
 
-Port (`SessionRepositoryProtocol`) + asyncpg adapter calling the Postgres
-functions documented in `database/postgres/functions/README.md` + in-memory
-fake for fast tests. Sessions carry the GoTrue tokens (SecretStr in Python,
-pgcrypto-encrypted at rest in Postgres); the browser only ever sees the
-opaque `id`.
+Contract: database/postgres/DESIGN-sessions-identity.md. The cookie carries a
+high-entropy opaque token; this adapter passes ONLY sha256(token) to the
+database. GoTrue tokens are encrypted app-side (Decision A, injected
+TokenCipher) before storage and decrypted after fetch; ciphertext travels
+hex-encoded inside the jsonb envelope.
 
-`get` returns revoked/expired sessions as data — VALIDITY decisions belong to
-the dependency layer, which can then distinguish 'invalid' from 'expired'.
+VALIDITY is decided by the database: `get`/`touch`/`rotate` raise the typed
+auth exceptions mapped from the DB error codes (SESSION_NOT_FOUND /
+SESSION_REVOKED -> InvalidSessionError, SESSION_EXPIRED ->
+SessionExpiredError). `revoke` is idempotent and never raises for missing or
+already-revoked sessions.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
 import asyncpg
 from pydantic import SecretStr
 
+from app.auth.exceptions import (
+    IdentityMappingError,
+    InvalidSessionError,
+    SessionExpiredError,
+)
+from app.auth.session_tokens import hash_session_token
+from app.auth.token_cipher import TokenCipher
 from app.core.errors.core_errors import DatabaseResultError
 from app.db.dto_base import RepositoryDTO
 from app.db.errors import map_asyncpg_error
 
-SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
 
-
-class SessionDTO(RepositoryDTO):
-    id: str
+class ActiveSessionDTO(RepositoryDTO):
+    session_internal_id: str
     user_id: str
     tenant_id: str
     email: str | None = None
     gotrue_access_token: SecretStr
     gotrue_refresh_token: SecretStr
+    gotrue_expires_at: datetime | None = None
     absolute_expires_at: datetime
     idle_expires_at: datetime
-    created_at: datetime
-    revoked_at: datetime | None = None
+
+
+class CreatedSessionDTO(RepositoryDTO):
+    session_internal_id: str
+    absolute_expires_at: datetime
+    idle_expires_at: datetime
 
 
 class SessionRepositoryProtocol(Protocol):
     async def create(
         self,
         *,
+        session_token: str,
         user_id: str,
         tenant_id: str,
         access_token: str,
         refresh_token: str,
+        gotrue_expires_at: datetime | None,
         absolute_ttl_seconds: int,
         idle_ttl_seconds: int,
-        email: str | None = None,
         user_agent: str | None = None,
         ip: str | None = None,
-    ) -> SessionDTO: ...
+    ) -> CreatedSessionDTO: ...
 
-    async def get(self, *, session_id: str) -> SessionDTO | None: ...
+    async def get(self, *, session_token: str) -> ActiveSessionDTO: ...
 
-    async def touch(self, *, session_id: str, idle_ttl_seconds: int) -> SessionDTO | None: ...
+    async def touch(self, *, session_token: str, idle_ttl_seconds: int) -> datetime: ...
 
     async def rotate(
         self,
         *,
-        session_id: str,
+        old_session_token: str,
+        new_session_token: str,
         access_token: str,
         refresh_token: str,
+        gotrue_expires_at: datetime | None,
         idle_ttl_seconds: int,
-    ) -> SessionDTO | None: ...
+    ) -> CreatedSessionDTO: ...
 
-    async def revoke(self, *, session_id: str) -> None: ...
+    async def revoke(self, *, session_token: str) -> None: ...
+
+    async def revoke_all(self, *, user_id: str, tenant_id: str) -> int: ...
 
 
-def _is_uuid(value: str) -> bool:
-    """Cookie values are attacker-controlled; reject non-uuids before SQL."""
+def raise_for_db_code(code: str | None) -> NoReturn:
+    """Translate a DB envelope error code into the auth exception taxonomy."""
+    if code in ("SESSION_NOT_FOUND", "SESSION_REVOKED"):
+        raise InvalidSessionError(details={"db_code": code})
+    if code == "SESSION_EXPIRED":
+        raise SessionExpiredError()
+    if code in ("TENANT_NOT_FOUND", "USER_NOT_IN_TENANT"):
+        raise IdentityMappingError(details={"db_code": code})
+    raise DatabaseResultError(
+        "Session function reported an unexpected error", details={"code": code}
+    )
+
+
+def _parse_ip(ip: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    if ip is None:
+        return None
     try:
-        uuid.UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        return False
-    return True
+        return ipaddress.ip_address(ip)
+    except ValueError:
+        return None  # audit-only field; never fail a login over a weird ip string
 
 
 class AsyncpgSessionRepository:
-    """Calls the app.*_user_session Postgres functions (envelope-returning)."""
+    """Calls the app.*_user_session functions from the sqitch contract."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, cipher: TokenCipher) -> None:
         self._pool = pool
+        self._cipher = cipher
 
     async def create(
         self,
         *,
+        session_token: str,
         user_id: str,
         tenant_id: str,
         access_token: str,
         refresh_token: str,
+        gotrue_expires_at: datetime | None,
         absolute_ttl_seconds: int,
         idle_ttl_seconds: int,
-        email: str | None = None,
         user_agent: str | None = None,
         ip: str | None = None,
-    ) -> SessionDTO:
+    ) -> CreatedSessionDTO:
         data = await self._call(
-            "SELECT app.create_user_session($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "SELECT app.create_user_session($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            hash_session_token(session_token),
             uuid.UUID(user_id),
             uuid.UUID(tenant_id),
-            email,
-            access_token,
-            refresh_token,
-            absolute_ttl_seconds,
-            idle_ttl_seconds,
+            self._cipher.encrypt(access_token),
+            self._cipher.encrypt(refresh_token),
+            gotrue_expires_at,
+            timedelta(seconds=absolute_ttl_seconds),
+            timedelta(seconds=idle_ttl_seconds),
             user_agent,
-            ip,
+            _parse_ip(ip),
         )
-        if data is None:
-            raise DatabaseResultError("create_user_session returned no session")
-        return SessionDTO(**data)
+        return CreatedSessionDTO(**data)
 
-    async def get(self, *, session_id: str) -> SessionDTO | None:
-        if not _is_uuid(session_id):
-            return None
-        data = await self._call("SELECT app.get_user_session($1)", uuid.UUID(session_id))
-        return SessionDTO(**data) if data is not None else None
-
-    async def touch(self, *, session_id: str, idle_ttl_seconds: int) -> SessionDTO | None:
-        if not _is_uuid(session_id):
-            return None
+    async def get(self, *, session_token: str) -> ActiveSessionDTO:
         data = await self._call(
-            "SELECT app.touch_user_session($1, $2)", uuid.UUID(session_id), idle_ttl_seconds
+            "SELECT app.get_user_session($1)", hash_session_token(session_token)
         )
-        return SessionDTO(**data) if data is not None else None
+        return ActiveSessionDTO(
+            session_internal_id=data["session_internal_id"],
+            user_id=data["user_id"],
+            tenant_id=data["tenant_id"],
+            email=data.get("email"),
+            gotrue_access_token=SecretStr(
+                self._cipher.decrypt(bytes.fromhex(data["gotrue_access_token"]))
+            ),
+            gotrue_refresh_token=SecretStr(
+                self._cipher.decrypt(bytes.fromhex(data["gotrue_refresh_token"]))
+            ),
+            gotrue_expires_at=data.get("gotrue_expires_at"),
+            absolute_expires_at=data["absolute_expires_at"],
+            idle_expires_at=data["idle_expires_at"],
+        )
+
+    async def touch(self, *, session_token: str, idle_ttl_seconds: int) -> datetime:
+        data = await self._call(
+            "SELECT app.touch_user_session($1, $2)",
+            hash_session_token(session_token),
+            timedelta(seconds=idle_ttl_seconds),
+        )
+        return datetime.fromisoformat(data["idle_expires_at"])
 
     async def rotate(
         self,
         *,
-        session_id: str,
+        old_session_token: str,
+        new_session_token: str,
         access_token: str,
         refresh_token: str,
+        gotrue_expires_at: datetime | None,
         idle_ttl_seconds: int,
-    ) -> SessionDTO | None:
-        if not _is_uuid(session_id):
-            return None
+    ) -> CreatedSessionDTO:
         data = await self._call(
-            "SELECT app.rotate_user_session($1, $2, $3, $4)",
-            uuid.UUID(session_id),
-            access_token,
-            refresh_token,
-            idle_ttl_seconds,
+            "SELECT app.rotate_user_session($1, $2, $3, $4, $5, $6)",
+            hash_session_token(old_session_token),
+            hash_session_token(new_session_token),
+            self._cipher.encrypt(access_token),
+            self._cipher.encrypt(refresh_token),
+            gotrue_expires_at,
+            timedelta(seconds=idle_ttl_seconds),
         )
-        return SessionDTO(**data) if data is not None else None
+        return CreatedSessionDTO(**data)
 
-    async def revoke(self, *, session_id: str) -> None:
-        if not _is_uuid(session_id):
-            return
-        await self._call("SELECT app.revoke_user_session($1)", uuid.UUID(session_id))
+    async def revoke(self, *, session_token: str) -> None:
+        await self._call("SELECT app.revoke_user_session($1)", hash_session_token(session_token))
 
-    async def _call(self, query: str, *args: Any) -> dict[str, Any] | None:
-        """Run an envelope-returning function; None on SESSION_NOT_FOUND."""
+    async def revoke_all(self, *, user_id: str, tenant_id: str) -> int:
+        data = await self._call(
+            "SELECT app.revoke_all_user_sessions($1, $2)",
+            uuid.UUID(user_id),
+            uuid.UUID(tenant_id),
+        )
+        return int(data["revoked_count"])
+
+    async def _call(self, query: str, *args: Any) -> dict[str, Any]:
+        """Run an envelope function; return `data` or raise the mapped exception."""
         try:
             raw = await self._pool.fetchval(query, *args)
         except asyncpg.PostgresError as exc:
@@ -164,108 +220,156 @@ class AsyncpgSessionRepository:
         if not isinstance(envelope, dict):
             raise DatabaseResultError("Session function returned a non-envelope result")
         if envelope.get("success"):
-            data = envelope.get("data") or {}
-            session = data.get("session")
-            return session if isinstance(session, dict) else None
-        error = envelope.get("error") or {}
-        if error.get("code") == SESSION_NOT_FOUND:
-            return None
-        raise DatabaseResultError(
-            "Session function reported an error",
-            details={"code": error.get("code")},
-        )
+            data = envelope.get("data")
+            return data if isinstance(data, dict) else {}
+        raise_for_db_code((envelope.get("error") or {}).get("code"))
 
 
+@dataclass
+class _StoredSession:
+    internal_id: str
+    user_id: str
+    tenant_id: str
+    access_token: str
+    refresh_token: str
+    gotrue_expires_at: datetime | None
+    absolute_expires_at: datetime
+    idle_expires_at: datetime
+    revoked_at: datetime | None = None
+
+
+@dataclass
 class FakeSessionRepository:
-    """In-memory sessions for fast tests. Same contract, injectable clock."""
+    """In-memory implementation with identical raise semantics; clock injectable.
 
-    def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
-        self._clock = clock or (lambda: datetime.now(UTC))
-        self._sessions: dict[str, SessionDTO] = {}
+    Email is joined from app.users in the real contract; the fake resolves it
+    via `set_user_email` seeding.
+    """
+
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+    _sessions: dict[str, _StoredSession] = field(default_factory=dict)
+    _emails: dict[str, str] = field(default_factory=dict)
+
+    def set_user_email(self, user_id: str, email: str) -> None:
+        self._emails[user_id] = email
 
     async def create(
         self,
         *,
+        session_token: str,
         user_id: str,
         tenant_id: str,
         access_token: str,
         refresh_token: str,
+        gotrue_expires_at: datetime | None,
         absolute_ttl_seconds: int,
         idle_ttl_seconds: int,
-        email: str | None = None,
         user_agent: str | None = None,
         ip: str | None = None,
-    ) -> SessionDTO:
-        now = self._clock()
+    ) -> CreatedSessionDTO:
+        now = self.clock()
         absolute = now + timedelta(seconds=absolute_ttl_seconds)
-        session = SessionDTO(
-            id=str(uuid.uuid4()),
+        stored = _StoredSession(
+            internal_id=str(uuid.uuid4()),
             user_id=user_id,
             tenant_id=tenant_id,
-            email=email,
-            gotrue_access_token=SecretStr(access_token),
-            gotrue_refresh_token=SecretStr(refresh_token),
+            access_token=access_token,
+            refresh_token=refresh_token,
+            gotrue_expires_at=gotrue_expires_at,
             absolute_expires_at=absolute,
             idle_expires_at=min(now + timedelta(seconds=idle_ttl_seconds), absolute),
-            created_at=now,
-            revoked_at=None,
         )
-        self._sessions[session.id] = session
-        return session
-
-    async def get(self, *, session_id: str) -> SessionDTO | None:
-        return self._sessions.get(session_id)
-
-    async def touch(self, *, session_id: str, idle_ttl_seconds: int) -> SessionDTO | None:
-        session = self._sessions.get(session_id)
-        if session is None or session.revoked_at is not None:
-            return None
-        now = self._clock()
-        updated = session.model_copy(
-            update={
-                "idle_expires_at": min(
-                    now + timedelta(seconds=idle_ttl_seconds), session.absolute_expires_at
-                )
-            }
+        self._sessions[session_token] = stored
+        return CreatedSessionDTO(
+            session_internal_id=stored.internal_id,
+            absolute_expires_at=stored.absolute_expires_at,
+            idle_expires_at=stored.idle_expires_at,
         )
-        self._sessions[session_id] = updated
-        return updated
+
+    def _active(self, session_token: str) -> _StoredSession:
+        stored = self._sessions.get(session_token)
+        if stored is None:
+            raise InvalidSessionError(details={"db_code": "SESSION_NOT_FOUND"})
+        if stored.revoked_at is not None:
+            raise InvalidSessionError(details={"db_code": "SESSION_REVOKED"})
+        now = self.clock()
+        if stored.absolute_expires_at <= now or stored.idle_expires_at <= now:
+            raise SessionExpiredError()
+        return stored
+
+    async def get(self, *, session_token: str) -> ActiveSessionDTO:
+        stored = self._active(session_token)
+        return ActiveSessionDTO(
+            session_internal_id=stored.internal_id,
+            user_id=stored.user_id,
+            tenant_id=stored.tenant_id,
+            email=self._emails.get(stored.user_id),
+            gotrue_access_token=SecretStr(stored.access_token),
+            gotrue_refresh_token=SecretStr(stored.refresh_token),
+            gotrue_expires_at=stored.gotrue_expires_at,
+            absolute_expires_at=stored.absolute_expires_at,
+            idle_expires_at=stored.idle_expires_at,
+        )
+
+    async def touch(self, *, session_token: str, idle_ttl_seconds: int) -> datetime:
+        stored = self._active(session_token)
+        stored.idle_expires_at = min(
+            self.clock() + timedelta(seconds=idle_ttl_seconds), stored.absolute_expires_at
+        )
+        return stored.idle_expires_at
 
     async def rotate(
         self,
         *,
-        session_id: str,
+        old_session_token: str,
+        new_session_token: str,
         access_token: str,
         refresh_token: str,
+        gotrue_expires_at: datetime | None,
         idle_ttl_seconds: int,
-    ) -> SessionDTO | None:
-        old = self._sessions.get(session_id)
-        if old is None or old.revoked_at is not None:
-            return None
-        now = self._clock()
-        self._sessions[session_id] = old.model_copy(update={"revoked_at": now})
-        new = SessionDTO(
-            id=str(uuid.uuid4()),
+    ) -> CreatedSessionDTO:
+        old = self._active(old_session_token)
+        now = self.clock()
+        new = _StoredSession(
+            internal_id=str(uuid.uuid4()),
             user_id=old.user_id,
             tenant_id=old.tenant_id,
-            email=old.email,
-            gotrue_access_token=SecretStr(access_token),
-            gotrue_refresh_token=SecretStr(refresh_token),
-            absolute_expires_at=old.absolute_expires_at,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            gotrue_expires_at=gotrue_expires_at,
+            absolute_expires_at=old.absolute_expires_at,  # never extended
             idle_expires_at=min(now + timedelta(seconds=idle_ttl_seconds), old.absolute_expires_at),
-            created_at=now,
-            revoked_at=None,
         )
-        self._sessions[new.id] = new
-        return new
+        old.revoked_at = now
+        self._sessions[new_session_token] = new
+        return CreatedSessionDTO(
+            session_internal_id=new.internal_id,
+            absolute_expires_at=new.absolute_expires_at,
+            idle_expires_at=new.idle_expires_at,
+        )
 
-    async def revoke(self, *, session_id: str) -> None:
-        session = self._sessions.get(session_id)
-        if session is not None and session.revoked_at is None:
-            self._sessions[session_id] = session.model_copy(update={"revoked_at": self._clock()})
+    async def revoke(self, *, session_token: str) -> None:
+        stored = self._sessions.get(session_token)
+        if stored is not None and stored.revoked_at is None:
+            stored.revoked_at = self.clock()
+
+    async def revoke_all(self, *, user_id: str, tenant_id: str) -> int:
+        now = self.clock()
+        count = 0
+        for stored in self._sessions.values():
+            if (
+                stored.user_id == user_id
+                and stored.tenant_id == tenant_id
+                and stored.revoked_at is None
+                and stored.absolute_expires_at > now
+                and stored.idle_expires_at > now
+            ):
+                stored.revoked_at = now
+                count += 1
+        return count
 
 
 if TYPE_CHECKING:
     # mypy-only structural proof that both implementations satisfy the port.
-    _proof_pg: SessionRepositoryProtocol = AsyncpgSessionRepository(None)
+    _proof_pg: SessionRepositoryProtocol = AsyncpgSessionRepository(None, None)  # type: ignore[arg-type]
     _proof_fake: SessionRepositoryProtocol = FakeSessionRepository()

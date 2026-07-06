@@ -1,8 +1,8 @@
 """BFF auth flow end-to-end with GoTrue mocked and fakes injected on app.state.
 
-Verifies cookie discipline (HttpOnly session id, readable CSRF, cleared PKCE),
-401/403 enforcement, session rotation and revocation — and the core invariant:
-NO GoTrue token ever appears in any response body or cookie.
+Verifies cookie discipline (HttpOnly opaque session token, readable CSRF,
+cleared PKCE), 401/403 enforcement, session rotation and revocation — and the
+core invariant: NO GoTrue token ever appears in any response body or cookie.
 """
 
 import uuid
@@ -61,7 +61,11 @@ def build_auth_app() -> tuple[FastAPI, FakeGoTrueClient, FakeSessionRepository]:
     gotrue = FakeGoTrueClient()
     sessions = FakeSessionRepository()
     mapper = FakeIdentityMapper()
-    mapper.add_mapping(GOTRUE_SUBJECT, user_id=str(uuid.uuid4()), tenant_id=str(uuid.uuid4()))
+    user_id, tenant_id = str(uuid.uuid4()), str(uuid.uuid4())
+    mapper.add_mapping(
+        "supabase", GOTRUE_SUBJECT, user_id=user_id, tenant_id=tenant_id, email="user@example.com"
+    )
+    sessions.set_user_email(user_id, "user@example.com")  # the DB joins app.users
     app.state.supabase_auth_client = gotrue
     app.state.session_repository = sessions
     app.state.identity_mapper = mapper
@@ -102,7 +106,7 @@ def assert_no_token_leak(response: httpx.Response) -> None:
 async def do_login_flow(
     client: httpx.AsyncClient,
 ) -> tuple[str, str, list[httpx.Response]]:
-    """Run login -> callback; return (session_id, csrf_token, responses)."""
+    """Run login -> callback; return (session_token, csrf_token, responses)."""
     login = await client.get("/api/v1/auth/login")
     assert login.status_code == 302
     packed = cookie_value(login, "auth_state")
@@ -117,10 +121,10 @@ async def do_login_flow(
         headers=cookie_header({"auth_state": packed}),
     )
     assert callback.status_code == 302, callback.text
-    session_id = cookie_value(callback, "sid")
+    session_token = cookie_value(callback, "sid")
     csrf_token = cookie_value(callback, "csrftoken")
-    assert session_id and csrf_token
-    return session_id, csrf_token, [login, callback]
+    assert session_token and csrf_token
+    return session_token, csrf_token, [login, callback]
 
 
 async def test_login_redirects_to_authorize_url_and_sets_pkce_cookie() -> None:
@@ -139,7 +143,7 @@ async def test_login_redirects_to_authorize_url_and_sets_pkce_cookie() -> None:
 async def test_callback_issues_session_and_csrf_cookies_and_redirects() -> None:
     app, gotrue, sessions = build_auth_app()
     async with make_client(app) as client:
-        session_id, _csrf, responses = await do_login_flow(client)
+        session_token, _csrf, responses = await do_login_flow(client)
         callback = responses[1]
 
     assert callback.headers["location"] == "http://localhost:3000/"
@@ -150,10 +154,11 @@ async def test_callback_issues_session_and_csrf_cookies_and_redirects() -> None:
     assert csrf_raw is not None and "httponly" not in csrf_raw.lower()
     assert pkce_raw is not None and "max-age=0" in pkce_raw.lower()  # cleared
 
-    # The PKCE verifier really reached the exchange, and a session exists.
+    # The cookie carries an opaque token (not a UUID) and the session exists.
+    assert len(session_token) >= 43
     assert gotrue.exchanged and gotrue.exchanged[0][0] == "fake-auth-code"
-    stored = await sessions.get(session_id=session_id)
-    assert stored is not None and stored.email == "user@example.com"
+    stored = await sessions.get(session_token=session_token)
+    assert stored.email == "user@example.com"
     for response in responses:
         assert_no_token_leak(response)
 
@@ -181,7 +186,7 @@ async def test_me_requires_session_cookie() -> None:
     async with make_client(app) as client:
         anonymous = await client.get("/api/v1/auth/me")
         garbage = await client.get(
-            "/api/v1/auth/me", headers=cookie_header({"sid": str(uuid.uuid4())})
+            "/api/v1/auth/me", headers=cookie_header({"sid": "forged-or-stale-token"})
         )
     assert anonymous.status_code == 401
     assert anonymous.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
@@ -192,8 +197,10 @@ async def test_me_requires_session_cookie() -> None:
 async def test_me_returns_principal_with_valid_session() -> None:
     app, _, _ = build_auth_app()
     async with make_client(app) as client:
-        session_id, _csrf, _ = await do_login_flow(client)
-        response = await client.get("/api/v1/auth/me", headers=cookie_header({"sid": session_id}))
+        session_token, _csrf, _ = await do_login_flow(client)
+        response = await client.get(
+            "/api/v1/auth/me", headers=cookie_header({"sid": session_token})
+        )
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["email"] == "user@example.com"
@@ -205,15 +212,15 @@ async def test_me_returns_principal_with_valid_session() -> None:
 async def test_refresh_rejects_missing_or_mismatched_csrf() -> None:
     app, _, _ = build_auth_app()
     async with make_client(app) as client:
-        session_id, csrf_token, _ = await do_login_flow(client)
+        session_token, csrf_token, _ = await do_login_flow(client)
         no_header = await client.post(
             "/api/v1/auth/refresh",
-            headers=cookie_header({"sid": session_id, "csrftoken": csrf_token}),
+            headers=cookie_header({"sid": session_token, "csrftoken": csrf_token}),
         )
         mismatched = await client.post(
             "/api/v1/auth/refresh",
             headers={
-                **cookie_header({"sid": session_id, "csrftoken": csrf_token}),
+                **cookie_header({"sid": session_token, "csrftoken": csrf_token}),
                 "X-CSRF-Token": "wrong-token",
             },
         )
@@ -222,29 +229,33 @@ async def test_refresh_rejects_missing_or_mismatched_csrf() -> None:
         assert response.json()["error"]["code"] == "CSRF_VALIDATION_FAILED"
 
 
-async def test_refresh_rotates_session_id_and_tokens() -> None:
+async def test_refresh_rotates_session_token_and_gotrue_tokens() -> None:
     app, gotrue, sessions = build_auth_app()
     async with make_client(app) as client:
-        session_id, csrf_token, _ = await do_login_flow(client)
+        session_token, csrf_token, _ = await do_login_flow(client)
         response = await client.post(
             "/api/v1/auth/refresh",
             headers={
-                **cookie_header({"sid": session_id, "csrftoken": csrf_token}),
+                **cookie_header({"sid": session_token, "csrftoken": csrf_token}),
                 "X-CSRF-Token": csrf_token,
             },
         )
     assert response.status_code == 200, response.text
     assert response.json()["data"] == {"rotated": True}
 
-    new_session_id = cookie_value(response, "sid")
-    assert new_session_id and new_session_id != session_id  # fixation defense
+    new_session_token = cookie_value(response, "sid")
+    assert new_session_token and new_session_token != session_token  # fixation defense
     assert cookie_value(response, "csrftoken")  # fresh CSRF token issued
 
-    old = await sessions.get(session_id=session_id)
-    assert old is not None and old.revoked_at is not None
-    new = await sessions.get(session_id=new_session_id)
-    assert new is not None and new.revoked_at is None
-    assert new.gotrue_access_token.get_secret_value() == ROTATED_ACCESS_SECRET
+    # Old token is dead; the new one carries the rotated GoTrue tokens.
+    import pytest
+
+    from app.auth.exceptions import InvalidSessionError
+
+    with pytest.raises(InvalidSessionError):
+        await sessions.get(session_token=session_token)
+    fresh = await sessions.get(session_token=new_session_token)
+    assert fresh.gotrue_access_token.get_secret_value() == ROTATED_ACCESS_SECRET
     assert gotrue.refreshed_with == [REFRESH_SECRET]
     assert_no_token_leak(response)
 
@@ -252,15 +263,15 @@ async def test_refresh_rotates_session_id_and_tokens() -> None:
 async def test_logout_revokes_session_and_clears_cookies() -> None:
     app, gotrue, sessions = build_auth_app()
     async with make_client(app) as client:
-        session_id, csrf_token, _ = await do_login_flow(client)
+        session_token, csrf_token, _ = await do_login_flow(client)
         response = await client.post(
             "/api/v1/auth/logout",
             headers={
-                **cookie_header({"sid": session_id, "csrftoken": csrf_token}),
+                **cookie_header({"sid": session_token, "csrftoken": csrf_token}),
                 "X-CSRF-Token": csrf_token,
             },
         )
-        after = await client.get("/api/v1/auth/me", headers=cookie_header({"sid": session_id}))
+        after = await client.get("/api/v1/auth/me", headers=cookie_header({"sid": session_token}))
 
     assert response.status_code == 200
     sid_raw = raw_cookie(response, "sid")
@@ -268,10 +279,9 @@ async def test_logout_revokes_session_and_clears_cookies() -> None:
     assert sid_raw is not None and "max-age=0" in sid_raw.lower()
     assert csrf_raw is not None and "max-age=0" in csrf_raw.lower()
 
-    revoked = await sessions.get(session_id=session_id)
-    assert revoked is not None and revoked.revoked_at is not None
     assert gotrue.logged_out_tokens == [ACCESS_SECRET]  # server-side GoTrue logout
     assert after.status_code == 401  # the revoked session no longer authenticates
+    assert after.json()["error"]["code"] == "INVALID_SESSION"
     assert_no_token_leak(response)
 
 
