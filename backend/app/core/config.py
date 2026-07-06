@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     db_provider: Literal["postgres", "sqlite"] = "sqlite"
     postgres_database_url: SecretStr | None = None
     sqlite_database_url: str = "./local.db"
+    db_pool_min_size: int = 2
+    db_pool_max_size: int = 10
+    db_command_timeout: int = 30
 
     # --- Redis ---
     redis_url: SecretStr | None = None
