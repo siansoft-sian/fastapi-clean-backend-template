@@ -1,0 +1,50 @@
+services:
+  api:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # Local compose wiring; flip the STARTUP_* flags once the adapters ship (M2+).
+      APP_ENV: development
+      STARTUP_CONNECT_DATABASE: "false"
+      STARTUP_CONNECT_REDIS: "false"
+      POSTGRES_DATABASE_URL: postgresql://app:app@postgres:5432/app
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # --- worker/beat arrive with the jobs milestone (STARTUP_CREATE_CELERY) ---
+  # worker:
+  #   build:
+  #     context: ./backend
+  #   command: celery -A app.jobs.celery_app worker --loglevel=INFO
+  #   depends_on: [redis, postgres]
+  # beat:
+  #   build:
+  #     context: ./backend
+  #   command: celery -A app.jobs.celery_app beat --loglevel=INFO
+  #   depends_on: [redis]
+
+volumes:
+  postgres_data:
