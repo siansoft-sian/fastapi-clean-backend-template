@@ -34,16 +34,17 @@ def _error_response(
     details: dict[str, Any] | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> ORJSONResponse:
-    body = api_error(
-        code=code,
-        message=message,
-        details=details,
-        meta={
-            "path": request.url.path,
-            "method": request.method,
-            "category": category.value,
-        },
-    )
+    meta: dict[str, Any] = {
+        "path": request.url.path,
+        "method": request.method,
+        "category": category.value,
+    }
+    # The catch-all handler runs outside the middleware stack; recover the id
+    # from request.state in case the contextvar is not visible there.
+    state_request_id = getattr(request.state, "request_id", None)
+    if state_request_id is not None:
+        meta["request_id"] = state_request_id
+    body = api_error(code=code, message=message, details=details, meta=meta)
     return ORJSONResponse(status_code=status_code, content=body, headers=headers)
 
 

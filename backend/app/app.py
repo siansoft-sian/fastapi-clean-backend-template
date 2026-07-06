@@ -10,6 +10,8 @@ from fastapi.responses import ORJSONResponse
 from app.bootstrap.lifespan import lifespan
 from app.core.config import Settings, get_settings
 from app.core.errors.exception_handlers import register_exception_handlers
+from app.core.logging.core_logging import configure_logging
+from app.core.middleware import install_middleware
 
 
 def init_sentry(settings: Settings) -> None:
@@ -22,6 +24,7 @@ def init_sentry(settings: Settings) -> None:
 def create_app() -> FastAPI:
     """Build and wire the application. Import-time safe: no network, DB, or Redis I/O."""
     settings = get_settings()
+    configure_logging(settings.log_level)
     init_sentry(settings)
 
     docs_enabled = not settings.is_production
@@ -34,6 +37,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if docs_enabled else None,
         openapi_url="/openapi.json" if docs_enabled else None,
     )
+    install_middleware(app)
     register_exception_handlers(app)
     return app
 
