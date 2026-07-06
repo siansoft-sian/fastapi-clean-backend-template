@@ -24,3 +24,15 @@ source_modules =
     app.modules.*.api
 forbidden_modules =
     app.db
+
+[importlinter:contract:only-db-knows-asyncpg]
+name = Only app.db and module infrastructure may import asyncpg directly
+type = forbidden
+source_modules =
+    app.api
+    app.core
+    app.bootstrap
+    app.shared
+forbidden_modules =
+    asyncpg
+allow_indirect_imports = True
