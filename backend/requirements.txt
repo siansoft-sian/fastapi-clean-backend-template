@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn[standard]>=0.30
+pydantic-settings>=2.3
+structlog>=24.1
+asyncpg>=0.29
+orjson>=3.10

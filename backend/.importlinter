@@ -1,0 +1,26 @@
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:domain-and-usecases-pure]
+name = Domain and use cases stay framework-free
+type = forbidden
+source_modules =
+    app.modules.*.domain
+    app.modules.*.application
+forbidden_modules =
+    fastapi
+    starlette
+    asyncpg
+    redis
+    celery
+    casbin
+    httpx
+
+[importlinter:contract:api-no-db-adapters]
+name = API layer does not import DB adapters
+type = forbidden
+source_modules =
+    app.modules.*.api
+forbidden_modules =
+    app.db
