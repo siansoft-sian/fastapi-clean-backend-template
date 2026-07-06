@@ -29,6 +29,17 @@ from app.authorization.authorization_service import AuthorizationService
 from app.authorization.casbin_enforcer import CasbinEnforcer
 from app.core.config import get_settings
 from app.db.transaction_manager import TransactionManagerProtocol
+from app.modules.bookings.application.use_cases.approve_booking import ApproveBookingUseCase
+from app.modules.bookings.application.use_cases.cancel_booking import CancelBookingUseCase
+from app.modules.bookings.application.use_cases.create_booking import CreateBookingUseCase
+from app.modules.bookings.application.use_cases.get_booking import GetBookingUseCase
+from app.modules.bookings.infrastructure.authorization_adapter import AuthorizationAdapter
+from app.modules.bookings.infrastructure.database_booking_repository import (
+    DatabaseBookingRepository,
+)
+from app.modules.bookings.infrastructure.outbox_adapter import LoggingOutboxAdapter
+from app.modules.bookings.ports.booking_repository import BookingRepositoryProtocol
+from app.modules.bookings.ports.outbox import OutboxPort
 from app.rate_limiting.limiter import RateLimiter
 
 
@@ -129,6 +140,65 @@ def provide_supabase_auth_client(request: Request) -> SupabaseAuthClient:
             "SUPABASE_ANON_KEY and OAUTH_REDIRECT_URI, or inject a fake on app.state."
         )
     return client
+
+
+# --- bookings module wiring (the reference pattern for future modules) ---
+
+
+def _booking_repository(request: Request) -> BookingRepositoryProtocol:
+    """Tests inject `app.state.booking_repository` (the in-memory fake)."""
+    existing = getattr(request.app.state, "booking_repository", None)
+    if existing is not None:
+        return existing
+    repository = DatabaseBookingRepository(_require_pool(request, "Booking repository"))
+    request.app.state.booking_repository = repository
+    return repository
+
+
+def _booking_outbox(request: Request) -> OutboxPort:
+    """# TODO(M7-outbox): swap for the transactional outbox adapter here —
+    use cases already emit through the port, so M7 is wiring-only."""
+    existing = getattr(request.app.state, "booking_outbox", None)
+    if existing is not None:
+        return existing
+    outbox = LoggingOutboxAdapter()
+    request.app.state.booking_outbox = outbox
+    return outbox
+
+
+def _booking_authorization(request: Request) -> AuthorizationAdapter:
+    return AuthorizationAdapter(provide_authorization_service(request))
+
+
+def provide_create_booking_use_case(request: Request) -> CreateBookingUseCase:
+    return CreateBookingUseCase(
+        repository=_booking_repository(request),
+        authorization=_booking_authorization(request),
+        outbox=_booking_outbox(request),
+    )
+
+
+def provide_get_booking_use_case(request: Request) -> GetBookingUseCase:
+    return GetBookingUseCase(
+        repository=_booking_repository(request),
+        authorization=_booking_authorization(request),
+    )
+
+
+def provide_approve_booking_use_case(request: Request) -> ApproveBookingUseCase:
+    return ApproveBookingUseCase(
+        repository=_booking_repository(request),
+        authorization=_booking_authorization(request),
+        outbox=_booking_outbox(request),
+    )
+
+
+def provide_cancel_booking_use_case(request: Request) -> CancelBookingUseCase:
+    return CancelBookingUseCase(
+        repository=_booking_repository(request),
+        authorization=_booking_authorization(request),
+        outbox=_booking_outbox(request),
+    )
 
 
 def provide_jwt_verifier(request: Request) -> JwtVerifier:
