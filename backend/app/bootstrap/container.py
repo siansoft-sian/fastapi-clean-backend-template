@@ -2,8 +2,11 @@
 
 Nothing here runs at import time. `startup()` touches only the resources whose
 `startup_*` flag is enabled; with all flags off (the default) the container
-starts and stops without performing any I/O. Real adapters arrive in later
-milestones — the asyncpg pool lands in M2.
+starts and stops without performing any I/O.
+
+M2: the database path is real — `startup_connect_database=true` builds and
+connects the asyncpg pool and its transaction manager. Redis/Casbin/Celery
+still fail loudly until their milestones ship.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ from __future__ import annotations
 import structlog
 
 from app.core.config import Settings
+from app.db.connection import DatabasePool
+from app.db.transaction_manager import AsyncpgTransactionManager
 
 logger = structlog.get_logger(__name__)
 
@@ -20,7 +25,8 @@ class Container:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.db_pool: object | None = None
+        self.database: DatabasePool | None = None
+        self.transaction_manager: AsyncpgTransactionManager | None = None
         self.redis: object | None = None
         self.casbin_enforcer: object | None = None
         self.celery_app: object | None = None
@@ -40,10 +46,9 @@ class Container:
         if self._started:
             return
         if self.settings.startup_connect_database:
-            raise NotImplementedError(
-                "STARTUP_CONNECT_DATABASE=true, but the asyncpg pool adapter arrives in M2. "
-                "Set the flag to false."
-            )
+            self.database = DatabasePool.from_settings(self.settings)
+            await self.database.connect()
+            self.transaction_manager = AsyncpgTransactionManager(self.database)
         if self.settings.startup_connect_redis:
             raise NotImplementedError(
                 "STARTUP_CONNECT_REDIS=true, but the Redis adapter has not shipped yet. "
@@ -72,6 +77,9 @@ class Container:
         """Release resources in reverse acquisition order. Safe to call when idle."""
         if not self._started:
             return
-        # Reverse order of startup(); nothing to release until adapters ship in M2+.
+        if self.database is not None:
+            await self.database.disconnect()
+        self.transaction_manager = None
+        self.database = None
         self._started = False
         logger.info("container_stopped")

@@ -10,13 +10,18 @@ class LivenessData(BaseModel):
 
 
 class ReadinessData(BaseModel):
-    """`degraded` means some dependencies are intentionally disabled — still 200."""
+    """Component states: ok | disabled | unknown | error.
 
-    status: Literal["ok", "degraded"]
+    Overall status: `error` (HTTP 503) when any enabled component fails;
+    `ok` when at least one component is verified and none is unverifiable;
+    `degraded` (still 200) when dependencies are intentionally disabled.
+    """
+
+    status: Literal["ok", "degraded", "error"]
     components: dict[str, str] = Field(default_factory=dict)
 
 
 class DeepHealthData(ReadinessData):
-    """Readiness plus extended probes (pool stats, migrations — arrive in M2+)."""
+    """Readiness plus extended probes (pool stats, migrations — arrive later)."""
 
     checks: dict[str, str] = Field(default_factory=dict)
