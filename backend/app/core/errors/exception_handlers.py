@@ -13,7 +13,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.enums import ErrorCategory
@@ -33,7 +33,7 @@ def _error_response(
     category: ErrorCategory,
     details: dict[str, Any] | None = None,
     headers: Mapping[str, str] | None = None,
-) -> ORJSONResponse:
+) -> JSONResponse:
     meta: dict[str, Any] = {
         "path": request.url.path,
         "method": request.method,
@@ -45,14 +45,14 @@ def _error_response(
     if state_request_id is not None:
         meta["request_id"] = state_request_id
     body = api_error(code=code, message=message, details=details, meta=meta)
-    return ORJSONResponse(status_code=status_code, content=body, headers=headers)
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the exception boundary. Starlette dispatches by most-specific type."""
 
     @app.exception_handler(AppError)
-    async def handle_app_error(request: Request, exc: AppError) -> ORJSONResponse:
+    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         log = logger.error if exc.http_status >= 500 else logger.warning
         log(
             "app_error",
@@ -74,7 +74,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
         request: Request, exc: RequestValidationError
-    ) -> ORJSONResponse:
+    ) -> JSONResponse:
         return _error_response(
             request,
             status_code=422,
@@ -85,9 +85,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def handle_http_exception(
-        request: Request, exc: StarletteHTTPException
-    ) -> ORJSONResponse:
+    async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         return _error_response(
             request,
             status_code=exc.status_code,
@@ -98,7 +96,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def handle_unexpected_error(request: Request, exc: Exception) -> ORJSONResponse:
+    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
         # Full traceback to the logs; a generic body to the client — never a stack trace.
         logger.error(
             "unhandled_exception",

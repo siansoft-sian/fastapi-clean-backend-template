@@ -5,8 +5,9 @@ The uvicorn runner lives in `app/main.py`. Never merge the two.
 
 import structlog
 from fastapi import FastAPI
-from fastapi.responses import ORJSONResponse
 
+from app.api.v1.health.routes import root_router as health_root_router
+from app.api.v1.health.routes import router as health_router
 from app.bootstrap.lifespan import lifespan
 from app.core.config import Settings, get_settings
 from app.core.errors.exception_handlers import register_exception_handlers
@@ -32,13 +33,15 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         lifespan=lifespan,
-        default_response_class=ORJSONResponse,
         docs_url="/docs" if docs_enabled else None,
         redoc_url="/redoc" if docs_enabled else None,
         openapi_url="/openapi.json" if docs_enabled else None,
     )
     install_middleware(app)
     register_exception_handlers(app)
+
+    app.include_router(health_root_router)
+    app.include_router(health_router, prefix=settings.api_prefix)
     return app
 
 
