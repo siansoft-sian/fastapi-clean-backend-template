@@ -15,6 +15,7 @@ from app.core.errors.exception_handlers import register_exception_handlers
 from app.core.logging.core_logging import configure_logging
 from app.core.middleware import install_middleware
 from app.modules._authz_demo.api.router import router as authz_demo_router
+from app.modules.bookings.api.router import router as bookings_router
 
 
 def init_sentry(settings: Settings) -> None:
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix=settings.api_prefix)
     # Throwaway two-layer authorization proof (see modules/_authz_demo).
     app.include_router(authz_demo_router, prefix=settings.api_prefix)
+    app.include_router(bookings_router, prefix=settings.api_prefix)
     return app
 
 
