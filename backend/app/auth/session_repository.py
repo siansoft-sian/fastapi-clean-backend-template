@@ -32,6 +32,7 @@ class SessionDTO(RepositoryDTO):
     id: str
     user_id: str
     tenant_id: str
+    email: str | None = None
     gotrue_access_token: SecretStr
     gotrue_refresh_token: SecretStr
     absolute_expires_at: datetime
@@ -50,6 +51,7 @@ class SessionRepositoryProtocol(Protocol):
         refresh_token: str,
         absolute_ttl_seconds: int,
         idle_ttl_seconds: int,
+        email: str | None = None,
         user_agent: str | None = None,
         ip: str | None = None,
     ) -> SessionDTO: ...
@@ -94,13 +96,15 @@ class AsyncpgSessionRepository:
         refresh_token: str,
         absolute_ttl_seconds: int,
         idle_ttl_seconds: int,
+        email: str | None = None,
         user_agent: str | None = None,
         ip: str | None = None,
     ) -> SessionDTO:
         data = await self._call(
-            "SELECT app.create_user_session($1, $2, $3, $4, $5, $6, $7, $8)",
+            "SELECT app.create_user_session($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             uuid.UUID(user_id),
             uuid.UUID(tenant_id),
+            email,
             access_token,
             refresh_token,
             absolute_ttl_seconds,
@@ -188,6 +192,7 @@ class FakeSessionRepository:
         refresh_token: str,
         absolute_ttl_seconds: int,
         idle_ttl_seconds: int,
+        email: str | None = None,
         user_agent: str | None = None,
         ip: str | None = None,
     ) -> SessionDTO:
@@ -197,6 +202,7 @@ class FakeSessionRepository:
             id=str(uuid.uuid4()),
             user_id=user_id,
             tenant_id=tenant_id,
+            email=email,
             gotrue_access_token=SecretStr(access_token),
             gotrue_refresh_token=SecretStr(refresh_token),
             absolute_expires_at=absolute,
@@ -242,6 +248,7 @@ class FakeSessionRepository:
             id=str(uuid.uuid4()),
             user_id=old.user_id,
             tenant_id=old.tenant_id,
+            email=old.email,
             gotrue_access_token=SecretStr(access_token),
             gotrue_refresh_token=SecretStr(refresh_token),
             absolute_expires_at=old.absolute_expires_at,

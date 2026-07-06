@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS app.user_sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL,
     tenant_id uuid NOT NULL,
+    email text,
     gotrue_access_token bytea NOT NULL,
     gotrue_refresh_token bytea NOT NULL,
     absolute_expires_at timestamptz NOT NULL,
@@ -49,6 +50,7 @@ SELECT jsonb_build_object(
     'id', s.id,
     'user_id', s.user_id,
     'tenant_id', s.tenant_id,
+    'email', s.email,
     'gotrue_access_token', pgp_sym_decrypt(s.gotrue_access_token, app._session_key()),
     'gotrue_refresh_token', pgp_sym_decrypt(s.gotrue_refresh_token, app._session_key()),
     'absolute_expires_at', s.absolute_expires_at,
@@ -77,7 +79,7 @@ SELECT jsonb_build_object(
 $$;
 
 CREATE OR REPLACE FUNCTION app.create_user_session(
-    p_user_id uuid, p_tenant_id uuid, p_access_token text, p_refresh_token text,
+    p_user_id uuid, p_tenant_id uuid, p_email text, p_access_token text, p_refresh_token text,
     p_absolute_ttl_seconds int, p_idle_ttl_seconds int, p_user_agent text, p_ip text
 ) RETURNS jsonb LANGUAGE plpgsql AS
 $$
@@ -86,10 +88,10 @@ DECLARE
     v_absolute timestamptz := now() + make_interval(secs => p_absolute_ttl_seconds);
 BEGIN
     INSERT INTO app.user_sessions
-        (user_id, tenant_id, gotrue_access_token, gotrue_refresh_token,
+        (user_id, tenant_id, email, gotrue_access_token, gotrue_refresh_token,
          absolute_expires_at, idle_expires_at, user_agent, ip)
     VALUES
-        (p_user_id, p_tenant_id,
+        (p_user_id, p_tenant_id, p_email,
          pgp_sym_encrypt(p_access_token, app._session_key()),
          pgp_sym_encrypt(p_refresh_token, app._session_key()),
          v_absolute,
@@ -148,10 +150,10 @@ BEGIN
         RETURN app._not_found();
     END IF;
     INSERT INTO app.user_sessions
-        (user_id, tenant_id, gotrue_access_token, gotrue_refresh_token,
+        (user_id, tenant_id, email, gotrue_access_token, gotrue_refresh_token,
          absolute_expires_at, idle_expires_at, user_agent, ip)
     VALUES
-        (v_old.user_id, v_old.tenant_id,
+        (v_old.user_id, v_old.tenant_id, v_old.email,
          pgp_sym_encrypt(p_access_token, app._session_key()),
          pgp_sym_encrypt(p_refresh_token, app._session_key()),
          v_old.absolute_expires_at,

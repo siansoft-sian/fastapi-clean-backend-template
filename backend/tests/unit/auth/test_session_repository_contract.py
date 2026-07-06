@@ -60,6 +60,7 @@ async def create_session(
         refresh_token="gotrue-refresh-secret",
         absolute_ttl_seconds=absolute_ttl,
         idle_ttl_seconds=idle_ttl,
+        email="user@example.com",
         user_agent="pytest",
         ip="127.0.0.1",
     )
@@ -75,6 +76,7 @@ async def test_create_then_get_round_trips(repo: SessionRepositoryProtocol) -> N
     assert fetched.id == created.id
     assert fetched.user_id == created.user_id
     assert fetched.tenant_id == created.tenant_id
+    assert fetched.email == "user@example.com"
     assert fetched.gotrue_access_token.get_secret_value() == "gotrue-access-secret"
     assert fetched.gotrue_refresh_token.get_secret_value() == "gotrue-refresh-secret"
 

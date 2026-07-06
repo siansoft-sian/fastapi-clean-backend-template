@@ -26,6 +26,7 @@ be integration-tested before the real migrations land — it is NOT a migration.
 | `id` | `uuid` PK, `gen_random_uuid()` | the opaque session id in the cookie |
 | `user_id` | `uuid` NOT NULL | internal user |
 | `tenant_id` | `uuid` NOT NULL | internal tenant |
+| `email` | `text` NULL | display email captured at login (for `/auth/me`) |
 | `gotrue_access_token` | `bytea` NOT NULL | `pgp_sym_encrypt` — never plaintext |
 | `gotrue_refresh_token` | `bytea` NOT NULL | `pgp_sym_encrypt` — never plaintext |
 | `absolute_expires_at` | `timestamptz` NOT NULL | hard cap, never extended |
@@ -43,7 +44,7 @@ Index: `(user_id)`, partial index on `revoked_at IS NULL`.
 All return the envelope; `data.session` carries the full session row with
 decrypted tokens (field names exactly as the columns above, tokens as text).
 
-- `app.create_user_session(p_user_id uuid, p_tenant_id uuid, p_access_token text, p_refresh_token text, p_absolute_ttl_seconds int, p_idle_ttl_seconds int, p_user_agent text, p_ip text)`
+- `app.create_user_session(p_user_id uuid, p_tenant_id uuid, p_email text, p_access_token text, p_refresh_token text, p_absolute_ttl_seconds int, p_idle_ttl_seconds int, p_user_agent text, p_ip text)`
   → inserts with `absolute_expires_at = now() + p_absolute_ttl_seconds`,
   `idle_expires_at = LEAST(now() + p_idle_ttl_seconds, absolute_expires_at)`.
 - `app.get_user_session(p_session_id uuid)`
