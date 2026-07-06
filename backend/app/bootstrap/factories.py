@@ -25,6 +25,8 @@ from app.auth.session_repository import (
 )
 from app.auth.supabase_auth_client import SupabaseAuthClient
 from app.auth.token_cipher import TokenCipher
+from app.authorization.authorization_service import AuthorizationService
+from app.authorization.casbin_enforcer import CasbinEnforcer
 from app.core.config import get_settings
 from app.db.transaction_manager import TransactionManagerProtocol
 
@@ -86,6 +88,22 @@ def provide_identity_mapper(request: Request) -> IdentityMapperProtocol:
     mapper = AsyncpgIdentityMapper(_require_pool(request, "Identity mapper"))
     request.app.state.identity_mapper = mapper
     return mapper
+
+
+def provide_authorization_service(request: Request) -> AuthorizationService:
+    """Layer-2 authorization service (Casbin-backed).
+
+    container.startup() builds it when STARTUP_LOAD_CASBIN=true (fail-fast on
+    a broken policy). When absent — e.g. test transports that skip lifespan —
+    it is built lazily here: a local model/policy file read, no network I/O.
+    Tests may inject a stub via `app.state.authorization_service`.
+    """
+    existing = getattr(request.app.state, "authorization_service", None)
+    if existing is not None:
+        return existing
+    service = AuthorizationService(CasbinEnforcer.from_settings(get_settings()))
+    request.app.state.authorization_service = service
+    return service
 
 
 def provide_supabase_auth_client(request: Request) -> SupabaseAuthClient:

@@ -23,6 +23,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db_pool = container.database.pool if container.database is not None else None
     app.state.supabase_auth_client = container.supabase_auth_client
     app.state.jwks_client = container.jwks_client
+    app.state.authorization_service = container.authorization_service
     try:
         yield
     finally:
@@ -32,3 +33,4 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.db_pool = None
         app.state.supabase_auth_client = None
         app.state.jwks_client = None
+        app.state.authorization_service = None

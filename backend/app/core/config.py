@@ -81,6 +81,7 @@ class Settings(BaseSettings):
 
     # --- Authorization ---
     casbin_model_path: str = "app/authorization/casbin_model.conf"
+    casbin_policy_path: str = "app/authorization/policy.csv"
 
     # --- Observability ---
     sentry_dsn: SecretStr | None = None
