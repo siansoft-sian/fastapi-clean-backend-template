@@ -46,10 +46,32 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: SecretStr | None = None
 
-    # --- Auth (Supabase JWT via JWKS) ---
+    # --- Auth: Supabase GoTrue (BFF — all interactions are server-to-server) ---
+    supabase_project_url: str | None = None
+    supabase_anon_key: SecretStr | None = None
     supabase_jwks_url: str | None = None
     supabase_jwt_issuer: str | None = None
     supabase_jwt_audience: str = "authenticated"
+    oauth_provider: str = "google"
+    oauth_redirect_uri: str | None = None
+    frontend_post_login_url: str = "http://localhost:3000/"
+    jwks_cache_ttl_seconds: int = 3600
+
+    # --- Session cookies (BFF: opaque id only; tokens never reach the browser) ---
+    session_cookie_name: str = "sid"
+    session_cookie_secure: bool = True
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    session_cookie_domain: str | None = None
+    session_absolute_ttl_seconds: int = 43200  # 12h
+    session_idle_ttl_seconds: int = 1800  # 30min, slides on each authenticated request
+
+    # --- CSRF (double-submit cookie) ---
+    csrf_cookie_name: str = "csrftoken"
+    csrf_header_name: str = "X-CSRF-Token"
+
+    # --- PKCE login flow ---
+    pkce_state_cookie_name: str = "auth_state"
+    pkce_state_ttl_seconds: int = 600
 
     # --- Authorization ---
     casbin_model_path: str = "app/authorization/casbin_model.conf"
@@ -63,13 +85,18 @@ class Settings(BaseSettings):
     startup_connect_redis: bool = False
     startup_load_casbin: bool = False
     startup_create_celery: bool = False
+    startup_preload_jwks: bool = False
 
     @field_validator(
         "postgres_database_url",
         "redis_url",
         "sentry_dsn",
+        "supabase_project_url",
+        "supabase_anon_key",
         "supabase_jwks_url",
         "supabase_jwt_issuer",
+        "oauth_redirect_uri",
+        "session_cookie_domain",
         mode="before",
     )
     @classmethod

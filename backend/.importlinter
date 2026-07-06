@@ -25,6 +25,24 @@ source_modules =
 forbidden_modules =
     app.db
 
+[importlinter:contract:auth-core-framework-free]
+name = Auth core logic stays FastAPI-free (only cookies/dependencies/routes may touch it)
+type = forbidden
+source_modules =
+    app.auth.auth_context
+    app.auth.csrf
+    app.auth.exceptions
+    app.auth.identity_mapper
+    app.auth.jwks_client
+    app.auth.jwt_verifier
+    app.auth.pkce
+    app.auth.scopes
+    app.auth.session_repository
+    app.auth.supabase_auth_client
+forbidden_modules =
+    fastapi
+    starlette
+
 [importlinter:contract:only-db-knows-asyncpg]
 name = Only app.db and module infrastructure may import asyncpg directly
 type = forbidden

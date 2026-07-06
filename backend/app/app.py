@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from app.api.v1.health.routes import root_router as health_root_router
 from app.api.v1.health.routes import router as health_router
+from app.auth.routes import router as auth_router
 from app.bootstrap.lifespan import lifespan
 from app.core.config import Settings, get_settings
 from app.core.errors.exception_handlers import register_exception_handlers
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_root_router)
     app.include_router(health_router, prefix=settings.api_prefix)
+    app.include_router(auth_router, prefix=settings.api_prefix)
     return app
 
 
