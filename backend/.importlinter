@@ -38,7 +38,9 @@ source_modules =
     app.auth.pkce
     app.auth.scopes
     app.auth.session_repository
+    app.auth.session_tokens
     app.auth.supabase_auth_client
+    app.auth.token_cipher
 forbidden_modules =
     fastapi
     starlette

@@ -1,22 +1,18 @@
 # database/
 
-Schema and migrations for the PostgreSQL database. **FastAPI never reads this
-folder at runtime** — it exists for humans and migration tooling only.
+The PostgreSQL side of the template. **FastAPI never reads this folder at
+runtime** — the application only calls the functions the migrations create.
 
-## How migrations are applied
+```
+postgres/                     the sqitch project (system of record)
+  sqitch.plan / sqitch.conf
+  deploy/ revert/ verify/     one triplet per change; verify raises on failure
+  procedures/                 function bodies (single source, \ir-included)
+  schema/                     table DDL (single source, \ir-included)
+  DESIGN-sessions-identity.md the sessions + identity contract (start here)
+  functions/README.md         pointer + ground rules
+```
 
-- Migrations under `postgres/migrations/` are applied with **sqitch** (see the
-  `sqitch-migration-engineer` skill) or via the **Supabase MCP** tool
-  (`apply_migration`) when the target is a Supabase project.
-- The application process never runs DDL. Repositories only ever call the
-  tables/functions that migrations have already created.
-- The first real migration arrives with the first real feature module; the
-  folder is empty until then.
-
-## The one deliberate exception
-
-`app/modules/_example/` (throwaway scaffolding proving the repository seam)
-creates its own `_example_items` table via `CREATE TABLE IF NOT EXISTS` in
-`ensure_schema()`, because it predates the migration tooling being wired.
-Real modules must NOT copy that shortcut — they get schema from migrations
-here and call the resulting DB functions.
+Deploy with `sqitch deploy db:pg://…`. Integration tests apply these exact
+scripts via `backend/tests/integration/sqitch_harness.py`, so the test suite
+always exercises what ships.

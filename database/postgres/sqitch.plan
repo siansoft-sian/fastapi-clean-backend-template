@@ -1,0 +1,18 @@
+%syntax-version=1.0.0
+%project=fastapi-clean-backend-db
+%uri=https://github.com/siansoft-sian/fastapi-clean-backend-template
+
+app/init_app_schema 2026-07-06T13:00:00Z siansoft <siansoft@gmail.com> # Create the app schema
+app/envelope_helpers [app/init_app_schema] 2026-07-06T13:00:01Z siansoft <siansoft@gmail.com> # app.ok/app.error standard envelope builders
+app/roles 2026-07-06T13:00:02Z siansoft <siansoft@gmail.com> # app_service NOLOGIN role for function EXECUTE grants
+app/identity_tables [app/init_app_schema] 2026-07-06T13:00:03Z siansoft <siansoft@gmail.com> # Minimal tenants/users/identities/memberships for map_identity
+app/user_sessions [app/identity_tables] 2026-07-06T13:00:04Z siansoft <siansoft@gmail.com> # Server-side BFF session store (hashed token lookup)
+app/create_user_session [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:05Z siansoft <siansoft@gmail.com> # Create a session after login
+app/get_user_session [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:06Z siansoft <siansoft@gmail.com> # Pure read: resolve an active session by token hash
+app/touch_user_session [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:07Z siansoft <siansoft@gmail.com> # Slide idle expiry on activity
+app/rotate_user_session [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:08Z siansoft <siansoft@gmail.com> # Atomic session rotation (fixation defense)
+app/revoke_user_session [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:09Z siansoft <siansoft@gmail.com> # Idempotent single-session revoke (logout)
+app/revoke_all_user_sessions [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:10Z siansoft <siansoft@gmail.com> # Revoke all active sessions for a user in a tenant
+app/delete_expired_sessions [app/user_sessions app/envelope_helpers] 2026-07-06T13:00:11Z siansoft <siansoft@gmail.com> # Scheduled retention purge
+app/map_identity [app/identity_tables app/envelope_helpers] 2026-07-06T13:00:12Z siansoft <siansoft@gmail.com> # GoTrue subject -> internal user + active tenant
+app/grants [app/roles app/create_user_session app/get_user_session app/touch_user_session app/rotate_user_session app/revoke_user_session app/revoke_all_user_sessions app/delete_expired_sessions app/map_identity] 2026-07-06T13:00:13Z siansoft <siansoft@gmail.com> # Lock down tables; EXECUTE for app_service only

@@ -1,14 +1,14 @@
 """Per-route auth dependencies — the BFF enforcement point.
 
 Auth is NEVER middleware in this template: routes opt in with Depends().
-Chain: opaque session cookie -> session repository -> validity checks ->
-idle-slide touch -> AuthContext (contextvar + structlog binding).
+Chain: opaque session cookie -> session repository (the DATABASE decides
+validity and raises the typed 401s) -> idle-slide touch -> AuthContext
+(contextvar + structlog binding).
 
 CSRF (double-submit) is its own dependency, applied to state-changing routes.
 """
 
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import structlog
@@ -20,8 +20,6 @@ from app.auth.auth_context import AuthContext, auth_context_var
 from app.auth.exceptions import (
     AuthenticationRequiredError,
     CsrfValidationError,
-    InvalidSessionError,
-    SessionExpiredError,
 )
 from app.auth.session_repository import SessionRepositoryProtocol
 from app.bootstrap.factories import provide_session_repository
@@ -35,32 +33,29 @@ async def get_current_principal(
     session_repository: SessionRepositoryDep,
     settings: SettingsDep,
 ) -> AuthContext:
-    """Resolve the session cookie into an AuthContext or raise a 401."""
-    session_id = request.cookies.get(settings.session_cookie_name)
-    if not session_id:
+    """Resolve the session cookie into an AuthContext or raise a 401.
+
+    `get` raises InvalidSessionError/SessionExpiredError itself (validity is
+    the database's decision); only the missing-cookie case is decided here.
+    """
+    session_token = request.cookies.get(settings.session_cookie_name)
+    if not session_token:
         raise AuthenticationRequiredError()
 
-    session = await session_repository.get(session_id=session_id)
-    if session is None or session.revoked_at is not None:
-        raise InvalidSessionError()
-
-    now = datetime.now(UTC)
-    if now >= session.absolute_expires_at or now >= session.idle_expires_at:
-        raise SessionExpiredError()
-
+    session = await session_repository.get(session_token=session_token)
     await session_repository.touch(
-        session_id=session.id, idle_ttl_seconds=settings.session_idle_ttl_seconds
+        session_token=session_token, idle_ttl_seconds=settings.session_idle_ttl_seconds
     )
 
     principal = AuthContext(
         user_id=session.user_id,
         tenant_id=session.tenant_id,
-        session_id=session.id,
+        session_id=session.session_internal_id,  # internal id — safe for audit/logs
         email=session.email,
         scopes=frozenset(),  # populated by the M4 authorization milestone
     )
     auth_context_var.set(principal)
-    # Bind identity (never the session id or tokens) for the request's log lines.
+    # Bind identity (never the cookie token) for the request's log lines.
     structlog.contextvars.bind_contextvars(user_id=principal.user_id, tenant_id=principal.tenant_id)
     return principal
 

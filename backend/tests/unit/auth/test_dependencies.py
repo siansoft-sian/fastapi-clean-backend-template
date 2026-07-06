@@ -1,4 +1,4 @@
-"""Auth dependencies called directly (no HTTP): session -> AuthContext or 401/403."""
+"""Auth dependencies called directly (no HTTP): session token -> AuthContext or 401/403."""
 
 import pytest
 from starlette.requests import Request
@@ -15,7 +15,8 @@ from app.auth.exceptions import (
     InvalidSessionError,
     SessionExpiredError,
 )
-from app.auth.session_repository import FakeSessionRepository, SessionDTO
+from app.auth.session_repository import FakeSessionRepository
+from app.auth.session_tokens import generate_session_token
 from app.core.config import Settings
 from app.core.errors.core_errors import ForbiddenError
 
@@ -45,29 +46,34 @@ def make_request(
 
 async def make_session(
     repo: FakeSessionRepository, *, absolute_ttl: int = 3600, idle_ttl: int = 600
-) -> SessionDTO:
-    return await repo.create(
+) -> tuple[str, str]:
+    """Create a fake session; returns (session_token, internal_id)."""
+    token = generate_session_token()
+    repo.set_user_email("user-1", "user@example.com")
+    created = await repo.create(
+        session_token=token,
         user_id="user-1",
         tenant_id="tenant-1",
         access_token="at",
         refresh_token="rt",
+        gotrue_expires_at=None,
         absolute_ttl_seconds=absolute_ttl,
         idle_ttl_seconds=idle_ttl,
-        email="user@example.com",
     )
+    return token, created.session_internal_id
 
 
 async def test_valid_session_builds_auth_context_and_sets_contextvar() -> None:
     repo = FakeSessionRepository()
-    session = await make_session(repo)
-    request = make_request(cookies={"sid": session.id})
+    token, internal_id = await make_session(repo)
+    request = make_request(cookies={"sid": token})
 
     principal = await get_current_principal(request, repo, make_settings())
 
     assert isinstance(principal, AuthContext)
     assert principal.user_id == "user-1"
     assert principal.tenant_id == "tenant-1"
-    assert principal.session_id == session.id
+    assert principal.session_id == internal_id  # internal id, never the cookie token
     assert principal.email == "user@example.com"
     assert principal.scopes == frozenset()
     assert get_auth_context() == principal
@@ -75,12 +81,11 @@ async def test_valid_session_builds_auth_context_and_sets_contextvar() -> None:
 
 async def test_valid_session_slides_idle_expiry() -> None:
     repo = FakeSessionRepository()
-    session = await make_session(repo, idle_ttl=60)
-    request = make_request(cookies={"sid": session.id})
-    await get_current_principal(request, repo, make_settings())  # idle ttl 600 now
-    touched = await repo.get(session_id=session.id)
-    assert touched is not None
-    assert touched.idle_expires_at > session.idle_expires_at
+    token, _ = await make_session(repo, idle_ttl=60)
+    before = (await repo.get(session_token=token)).idle_expires_at
+    await get_current_principal(make_request(cookies={"sid": token}), repo, make_settings())
+    after = (await repo.get(session_token=token)).idle_expires_at
+    assert after > before
 
 
 async def test_missing_cookie_raises_authentication_required() -> None:
@@ -88,41 +93,30 @@ async def test_missing_cookie_raises_authentication_required() -> None:
         await get_current_principal(make_request(), FakeSessionRepository(), make_settings())
 
 
-async def test_unknown_session_raises_invalid_session() -> None:
-    request = make_request(cookies={"sid": "11111111-1111-1111-1111-111111111111"})
+async def test_unknown_token_raises_invalid_session() -> None:
+    request = make_request(cookies={"sid": generate_session_token()})
     with pytest.raises(InvalidSessionError):
         await get_current_principal(request, FakeSessionRepository(), make_settings())
 
 
 async def test_revoked_session_raises_invalid_session() -> None:
     repo = FakeSessionRepository()
-    session = await make_session(repo)
-    await repo.revoke(session_id=session.id)
-    request = make_request(cookies={"sid": session.id})
+    token, _ = await make_session(repo)
+    await repo.revoke(session_token=token)
     with pytest.raises(InvalidSessionError):
-        await get_current_principal(request, repo, make_settings())
+        await get_current_principal(make_request(cookies={"sid": token}), repo, make_settings())
 
 
-async def test_idle_expired_session_raises_session_expired() -> None:
+async def test_expired_session_raises_session_expired() -> None:
     repo = FakeSessionRepository()
-    session = await make_session(repo, idle_ttl=0)  # idle expiry == now
-    request = make_request(cookies={"sid": session.id})
+    token, _ = await make_session(repo, absolute_ttl=0, idle_ttl=0)
     with pytest.raises(SessionExpiredError):
-        await get_current_principal(request, repo, make_settings())
-
-
-async def test_absolute_expired_session_raises_session_expired() -> None:
-    repo = FakeSessionRepository()
-    session = await make_session(repo, absolute_ttl=0, idle_ttl=0)
-    request = make_request(cookies={"sid": session.id})
-    with pytest.raises(SessionExpiredError):
-        await get_current_principal(request, repo, make_settings())
+        await get_current_principal(make_request(cookies={"sid": token}), repo, make_settings())
 
 
 async def test_verify_csrf_accepts_matching_pair() -> None:
-    settings = make_settings()
     request = make_request(cookies={"csrftoken": "match-me"}, headers={"X-CSRF-Token": "match-me"})
-    await verify_csrf(request, settings)  # must not raise
+    await verify_csrf(request, make_settings())  # must not raise
 
 
 @pytest.mark.parametrize(

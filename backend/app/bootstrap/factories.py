@@ -24,6 +24,8 @@ from app.auth.session_repository import (
     SessionRepositoryProtocol,
 )
 from app.auth.supabase_auth_client import SupabaseAuthClient
+from app.auth.token_cipher import TokenCipher
+from app.core.config import get_settings
 from app.db.transaction_manager import TransactionManagerProtocol
 
 
@@ -55,11 +57,23 @@ def _require_pool(request: Request, what: str) -> object:
 
 
 def provide_session_repository(request: Request) -> SessionRepositoryProtocol:
-    """Server-side session store. Tests inject `app.state.session_repository`."""
+    """Server-side session store. Tests inject `app.state.session_repository`.
+
+    The real adapter needs the Fernet cipher for GoTrue-token encryption at
+    rest (Decision A) — a missing key is a wiring error, not a 401.
+    """
     existing = getattr(request.app.state, "session_repository", None)
     if existing is not None:
         return existing
-    repository = AsyncpgSessionRepository(_require_pool(request, "Session repository"))
+    settings = get_settings()
+    if settings.session_token_encryption_key is None:
+        raise RuntimeError(
+            "SESSION_TOKEN_ENCRYPTION_KEY is required when the database session "
+            "store is enabled. Generate one with: python -c "
+            '"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+        )
+    cipher = TokenCipher(settings.session_token_encryption_key.get_secret_value())
+    repository = AsyncpgSessionRepository(_require_pool(request, "Session repository"), cipher)
     request.app.state.session_repository = repository
     return repository
 

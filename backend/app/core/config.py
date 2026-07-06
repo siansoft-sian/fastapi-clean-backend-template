@@ -57,7 +57,13 @@ class Settings(BaseSettings):
     frontend_post_login_url: str = "http://localhost:3000/"
     jwks_cache_ttl_seconds: int = 3600
 
-    # --- Session cookies (BFF: opaque id only; tokens never reach the browser) ---
+    # --- Session store (BFF: opaque hashed token; tokens never reach the browser) ---
+    # Fernet key for app-level encryption of GoTrue tokens at rest (Decision A).
+    # Generate with app.auth.token_cipher.TokenCipher.generate_key().
+    session_token_encryption_key: SecretStr | None = None
+    identity_auto_provision: bool = False
+
+    # --- Session cookies ---
     session_cookie_name: str = "sid"
     session_cookie_secure: bool = True
     session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
@@ -97,6 +103,7 @@ class Settings(BaseSettings):
         "supabase_jwt_issuer",
         "oauth_redirect_uri",
         "session_cookie_domain",
+        "session_token_encryption_key",
         mode="before",
     )
     @classmethod
