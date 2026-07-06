@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: SecretStr | None = None
 
+    # --- Rate limiting (M5 hybrid: IP-ceiling middleware + per-scope dependency) ---
+    rate_limit_enabled: bool = True
+    # Global default when Redis is down: allow + log loudly. Sensitive rules
+    # (auth, refund) opt into fail-closed per rule. A stored decision, never
+    # an accident.
+    rate_limit_fail_open: bool = True
+    # Comma-separated IPs/CIDRs of proxies whose X-Forwarded-For is trusted.
+    # Empty (default) = never trust XFF; the socket peer address is used.
+    trusted_proxies: str = ""
+
     # --- Auth: Supabase GoTrue (BFF — all interactions are server-to-server) ---
     supabase_project_url: str | None = None
     supabase_anon_key: SecretStr | None = None
